@@ -170,7 +170,7 @@ Resources:
 Outputs:
 
     LoadBalancer:
-      Description: Output referene for application load balancer
+      Description: Output referene for the load balancer
       Value: !Ref WebAppLB
 
 
