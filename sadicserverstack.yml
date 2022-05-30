@@ -1,0 +1,178 @@
+Parameters: 
+    EnvironmentName: 
+        Description: Base resource name for all resources.
+        Type: String
+      # EC2 default AMI to use to deploy the instance
+    EC2InstanceAMI:
+      Description: Ec2 instance AMI
+      Type: String
+
+Resources: 
+    # IAM role to allow the EC2 instance to access files from the S3 bucket
+    S3BucketAccessfromEC2:
+        Type: "AWS::IAM::Role"
+        Properties: 
+            AssumeRolePolicyDocument: 
+              Version: "2012-10-17"
+              Statement: 
+                - 
+                  Effect: "Allow"
+                  Principal: 
+                    Service: 
+                      - "ec2.amazonaws.com"
+                  Action: 
+                    - "sts:AssumeRole"
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AmazonS3FullAccess
+                  
+    # Ec2 isntance profile
+    ServerInstanceProfile: 
+        Type: AWS::IAM::InstanceProfile
+        Properties: 
+          Path: /
+          Roles: 
+            - !Ref  S3BucketAccessfromEC2
+
+    # Loadbalancer security group to allow Ingress and and Egress http
+    LoadBalancerSG:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+          GroupDescription: http access to Load Balancer open
+          VpcId:
+            Fn::ImportValue:
+              !Sub "${EnvironmentName}-VPC"
+          SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: 0.0.0.0/0
+          SecurityGroupEgress:
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: 0.0.0.0/0
+
+    # Ec2 instance security group to allow ssh anf http protocols
+    WebServerSecGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+          GroupDescription:  Access http from the ec2 instance and allow ssh
+          VpcId:
+            Fn::ImportValue:
+              !Sub "${EnvironmentName}-VPC"
+          SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: 0.0.0.0/0
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 0.0.0.0/0
+          SecurityGroupEgress:
+          - IpProtocol: tcp
+            FromPort: 0
+            ToPort: 65535
+            CidrIp: 0.0.0.0/0
+
+    # EC2 launch Configuration to deploy ec2 initial configurations
+    WebAppLaunchConfig:
+        Type: AWS::AutoScaling::LaunchConfiguration
+        Properties:
+          UserData:
+            Fn::Base64: !Sub |
+              #!/bin/bash  
+              apt-get update -y
+              apt-get install apache2 -y
+              systemctl start apache2.service
+              cd /var/www/html
+              echo "<h1>This Sadic's udagram project.</h1>" > index.html
+              echo "<P>It is amazing how I am able to do this in a space of one month</P>"  >> index.html
+              echo "<P>I didnt know anything about cloudformation just some few weeks ago</P>" >>  index.html
+              echo "<P>But now I am able to complete this complex project</P>" >> index.html
+              echo "<a href="https://www.alx-t.com/">I am grateful for this amazing project</a>" >> index.html
+             
+
+
+
+          ImageId: !Ref EC2InstanceAMI
+          SecurityGroups:
+          - Ref: WebServerSecGroup
+          InstanceType: t2.micro
+          BlockDeviceMappings:
+          - DeviceName: "/dev/sdk"
+            Ebs:
+              VolumeSize: '10'
+    # AutoScaling group
+    WebAppGroup:
+        Type: AWS::AutoScaling::AutoScalingGroup
+        Properties:
+            VPCZoneIdentifier:
+            - Fn::ImportValue: !Sub "${EnvironmentName}-PRIV1-SBN"
+            - Fn::ImportValue: !Sub "${EnvironmentName}-PRIV2-SBN"
+            LaunchConfigurationName:
+              Ref: WebAppLaunchConfig
+            MinSize: '4'
+            MaxSize: '5'
+            TargetGroupARNs:
+            - Ref: WebAppTargetGroup
+
+    # Application loadbalancer
+    WebAppLB:
+        Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+        Properties:
+          Subnets:
+          - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SBN"
+          - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SBN"
+          SecurityGroups:
+          - Ref: LoadBalancerSG
+    # load balancer listener
+    LBListener:
+        Type: AWS::ElasticLoadBalancingV2::Listener
+        Properties:
+          DefaultActions:
+          - Type: forward
+            TargetGroupArn:
+              Ref: WebAppTargetGroup
+          LoadBalancerArn:
+            Ref: WebAppLB
+          Port: '80'
+          Protocol: HTTP
+    ALBListenerRule:
+        Type: AWS::ElasticLoadBalancingV2::ListenerRule
+        Properties:
+          Actions:
+          - Type: forward
+            TargetGroupArn: !Ref 'WebAppTargetGroup'
+          Conditions:
+          - Field: path-pattern
+            Values: [/]
+          ListenerArn: !Ref 'LBListener'
+          Priority: 1
+
+    # laod balancer target group
+    WebAppTargetGroup:
+        Type: AWS::ElasticLoadBalancingV2::TargetGroup
+        Properties:
+          HealthCheckIntervalSeconds: 35
+          HealthCheckPath: /
+          HealthCheckProtocol: HTTP
+          HealthCheckTimeoutSeconds: 10
+          HealthyThresholdCount: 2
+          Port: 80
+          Protocol: HTTP
+          UnhealthyThresholdCount: 6
+          VpcId: 
+            Fn::ImportValue:
+              Fn::Sub: "${EnvironmentName}-VPC"
+
+Outputs:
+
+    LoadBalancer:
+      Description: Output referene for application load balancer
+      Value: !Ref WebAppLB
+
+
+    LoadBalancerUrl:
+      Description: The loadbalancer url
+      Value: !Join [ "", [ "http://", !GetAtt WebAppLB.DNSName ] ]
